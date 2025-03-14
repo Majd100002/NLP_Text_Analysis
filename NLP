@@ -1,0 +1,457 @@
+{
+  "nbformat": 4,
+  "nbformat_minor": 0,
+  "metadata": {
+    "colab": {
+      "provenance": [],
+      "gpuType": "A100",
+      "authorship_tag": "ABX9TyNz7paV1RXU8rgT7u5H7MqF",
+      "include_colab_link": true
+    },
+    "kernelspec": {
+      "name": "python3",
+      "display_name": "Python 3"
+    },
+    "language_info": {
+      "name": "python"
+    },
+    "accelerator": "GPU"
+  },
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "view-in-github",
+        "colab_type": "text"
+      },
+      "source": [
+        "<a href=\"https://colab.research.google.com/github/Majd100002/NLP_Text_Analysis/blob/main/NLP\" target=\"_parent\"><img src=\"https://colab.research.google.com/assets/colab-badge.svg\" alt=\"Open In Colab\"/></a>"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import torch\n",
+        "import os\n",
+        "import pandas as pd\n",
+        "import numpy as np\n",
+        "import transformers\n",
+        "from sklearn.model_selection import train_test_split\n",
+        "from imblearn.over_sampling import SMOTE\n",
+        "from torch.utils.data import Dataset\n",
+        "from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer, EarlyStoppingCallback\n",
+        "import torch.nn as nn"
+      ],
+      "metadata": {
+        "id": "WKSI0Pf44dNy"
+      },
+      "execution_count": 64,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "from google.colab import drive\n",
+        "drive.mount('/content/drive', force_remount=True)\n"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "MPh0PWXQ35H7",
+        "outputId": "2a013f2b-a10c-4596-ed1c-f52a29d3fb3c"
+      },
+      "execution_count": 2,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Mounted at /content/drive\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Load dataset\n",
+        "file_path = \"/content/drive/My Drive/NLP/germeval.training.txt.txt\"  # Adjust if needed\n",
+        "df = pd.read_csv(file_path, delimiter=\"\\t\", header=None, names=[\"text\", \"label\"])"
+      ],
+      "metadata": {
+        "id": "FKSfRZeU4VWh"
+      },
+      "execution_count": 65,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Encode labels\n",
+        "label_map = {label: idx for idx, label in enumerate(df[\"label\"].unique())}\n",
+        "df[\"label\"] = df[\"label\"].map(label_map)\n"
+      ],
+      "metadata": {
+        "id": "FV7jAaOC4odt"
+      },
+      "execution_count": 16,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Initialize tokenizer\n",
+        "tokenizer = AutoTokenizer.from_pretrained(\"bert-base-german-cased\")"
+      ],
+      "metadata": {
+        "id": "xp8QOpjZS3HS"
+      },
+      "execution_count": 17,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Apply SMOTE to balance dataset\n",
+        "X = df[\"text\"]\n",
+        "y = df[\"label\"]\n",
+        "\n",
+        "# Convert texts to embeddings before using SMOTE\n",
+        "X_encodings = tokenizer(list(X), truncation=True, padding=True, max_length=512, return_tensors=\"pt\")[\"input_ids\"]\n",
+        "\n",
+        "# Apply SMOTE to balance dataset\n",
+        "smote = SMOTE(random_state=42)\n",
+        "X_resampled, y_resampled = smote.fit_resample(X_encodings, y)"
+      ],
+      "metadata": {
+        "id": "lBYzQDGpS3-x"
+      },
+      "execution_count": 18,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Convert back to DataFrame\n",
+        "df_resampled = pd.DataFrame({'text': [tokenizer.decode(t, skip_special_tokens=True) for t in X_resampled], 'label': y_resampled})\n"
+      ],
+      "metadata": {
+        "id": "3XCsog6JTKPU"
+      },
+      "execution_count": 19,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Split dataset into training and validation sets\n",
+        "train_texts, val_texts, train_labels, val_labels = train_test_split(\n",
+        "    df_resampled[\"text\"], df_resampled[\"label\"], test_size=0.2, random_state=42\n",
+        ")"
+      ],
+      "metadata": {
+        "id": "9vjufkgETPDC"
+      },
+      "execution_count": 20,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Tokenize data\n",
+        "train_encodings = tokenizer(list(train_texts), truncation=True, padding=True, max_length=512)\n",
+        "val_encodings = tokenizer(list(val_texts), truncation=True, padding=True, max_length=512)"
+      ],
+      "metadata": {
+        "id": "Fo-doRoRTRh4"
+      },
+      "execution_count": 21,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Create PyTorch dataset class\n",
+        "class GermEvalDataset(Dataset):\n",
+        "    def __init__(self, encodings, labels):\n",
+        "        self.encodings = encodings\n",
+        "        self.labels = labels\n",
+        "\n",
+        "    def __len__(self):\n",
+        "        return len(self.labels)\n",
+        "\n",
+        "    def __getitem__(self, idx):\n",
+        "        item = {key: torch.tensor(val[idx]) for key, val in self.encodings.items()}\n",
+        "        item[\"labels\"] = torch.tensor(self.labels[idx])\n",
+        "        return item\n"
+      ],
+      "metadata": {
+        "id": "7fcG7UumTWVb"
+      },
+      "execution_count": 66,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Create dataset objects\n",
+        "train_dataset = GermEvalDataset(train_encodings, train_labels.tolist())\n",
+        "val_dataset = GermEvalDataset(val_encodings, val_labels.tolist())\n"
+      ],
+      "metadata": {
+        "id": "ZYSRS-QCTaLk"
+      },
+      "execution_count": 23,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Move to correct device\n",
+        "device = torch.device(\"cuda\" if torch.cuda.is_available() else \"cpu\")"
+      ],
+      "metadata": {
+        "id": "jhqRpBZqTkI-"
+      },
+      "execution_count": 67,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Load model\n",
+        "model = AutoModelForSequenceClassification.from_pretrained(\n",
+        "    \"bert-base-german-cased\",\n",
+        "    num_labels=len(label_map)\n",
+        ").to(device)"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "N3SPZJ5Y42qn",
+        "outputId": "3457e5d9-629a-49d1-dbf4-5b4f21ab1bda"
+      },
+      "execution_count": 68,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "Some weights of BertForSequenceClassification were not initialized from the model checkpoint at bert-base-german-cased and are newly initialized: ['classifier.bias', 'classifier.weight']\n",
+            "You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference.\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Define a custom trainer class to use weighted loss\n",
+        "class CustomTrainer(Trainer):\n",
+        "    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):  # Accept extra arguments\n",
+        "        labels = inputs.pop(\"labels\").to(device)  # Move labels to correct device\n",
+        "        outputs = model(**inputs)  # Forward pass\n",
+        "        logits = outputs.logits  # Model predictions\n",
+        "\n",
+        "        # Use standard CrossEntropyLoss (no class weights)\n",
+        "        loss_fct = nn.CrossEntropyLoss()\n",
+        "        loss = loss_fct(logits, labels)\n",
+        "\n",
+        "        return (loss, outputs) if return_outputs else loss"
+      ],
+      "metadata": {
+        "id": "_zh_fk81SDTr"
+      },
+      "execution_count": 69,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Define training arguments\n",
+        "training_args = TrainingArguments(\n",
+        "    output_dir=\"./results\",\n",
+        "    num_train_epochs=5,  # Increase epochs for better learning\n",
+        "    per_device_train_batch_size=16,\n",
+        "    per_device_eval_batch_size=16,\n",
+        "    save_strategy=\"epoch\",\n",
+        "    eval_strategy=\"epoch\",\n",
+        "    logging_dir=\"./logs\",\n",
+        "    load_best_model_at_end=True\n",
+        ")\n",
+        "\n",
+        "# Disable wandb\n",
+        "os.environ[\"WANDB_DISABLED\"] = \"true\"\n",
+        "\n",
+        "# Initialize trainer\n",
+        "trainer = CustomTrainer(\n",
+        "    model=model,\n",
+        "    args=training_args,\n",
+        "    train_dataset=train_dataset,\n",
+        "    eval_dataset=val_dataset,\n",
+        "    callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],\n",
+        ")\n",
+        "\n",
+        "# Train model\n",
+        "trainer.train()"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/",
+          "height": 304
+        },
+        "id": "o-L4v8Ia468B",
+        "outputId": "9a26a924-0f6f-44e8-e8b6-6dab15e7f761"
+      },
+      "execution_count": 70,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "Using the `WANDB_DISABLED` environment variable is deprecated and will be removed in v5. Use the --report_to flag to control the integrations used for logging result (for instance --report_to none).\n"
+          ]
+        },
+        {
+          "output_type": "display_data",
+          "data": {
+            "text/plain": [
+              "<IPython.core.display.HTML object>"
+            ],
+            "text/html": [
+              "\n",
+              "    <div>\n",
+              "      \n",
+              "      <progress value='8270' max='8270' style='width:300px; height:20px; vertical-align: middle;'></progress>\n",
+              "      [8270/8270 05:29, Epoch 5/5]\n",
+              "    </div>\n",
+              "    <table border=\"1\" class=\"dataframe\">\n",
+              "  <thead>\n",
+              " <tr style=\"text-align: left;\">\n",
+              "      <th>Epoch</th>\n",
+              "      <th>Training Loss</th>\n",
+              "      <th>Validation Loss</th>\n",
+              "    </tr>\n",
+              "  </thead>\n",
+              "  <tbody>\n",
+              "    <tr>\n",
+              "      <td>1</td>\n",
+              "      <td>0.832400</td>\n",
+              "      <td>0.829045</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <td>2</td>\n",
+              "      <td>0.832600</td>\n",
+              "      <td>0.827741</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <td>3</td>\n",
+              "      <td>0.832900</td>\n",
+              "      <td>0.829944</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <td>4</td>\n",
+              "      <td>0.832500</td>\n",
+              "      <td>0.826418</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <td>5</td>\n",
+              "      <td>0.825400</td>\n",
+              "      <td>0.826095</td>\n",
+              "    </tr>\n",
+              "  </tbody>\n",
+              "</table><p>"
+            ]
+          },
+          "metadata": {}
+        },
+        {
+          "output_type": "execute_result",
+          "data": {
+            "text/plain": [
+              "TrainOutput(global_step=8270, training_loss=0.8319106391436244, metrics={'train_runtime': 329.5094, 'train_samples_per_second': 401.415, 'train_steps_per_second': 25.098, 'total_flos': 543786316145280.0, 'train_loss': 0.8319106391436244, 'epoch': 5.0})"
+            ]
+          },
+          "metadata": {},
+          "execution_count": 70
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# TESTING THE MODEL\n",
+        "test_sentences = [\n",
+        "    \"Ich liebe Deutschland!\",\n",
+        "    \"Diese Regierung ist eine Schande!\",\n",
+        "    \"Ich hasse es, wenn Politiker lügen!\",\n",
+        "    \"Guten Morgen, wie geht es Ihnen?\",\n",
+        "    \"Du bist dumm und inkompetent!\",\n",
+        "]"
+      ],
+      "metadata": {
+        "id": "vV2Y4McSZDE3"
+      },
+      "execution_count": 71,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Tokenize test data and move to correct device\n",
+        "test_encodings = tokenizer(test_sentences, truncation=True, padding=True, max_length=512, return_tensors=\"pt\")\n",
+        "test_encodings = {key: val.to(device) for key, val in test_encodings.items()}  # Move inputs to device"
+      ],
+      "metadata": {
+        "id": "hX8moN2Ob37x"
+      },
+      "execution_count": 72,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Make predictions\n",
+        "model.eval()\n",
+        "with torch.no_grad():\n",
+        "    outputs = model(**test_encodings)  # Now everything is on the same device\n",
+        "    probabilities = torch.nn.functional.softmax(outputs.logits, dim=1)  # Convert logits to probabilities\n",
+        "    predictions = torch.argmax(outputs.logits, dim=1)\n",
+        "\n",
+        "# Print results with probabilities\n",
+        "for sentence, probs, pred in zip(test_sentences, probabilities, predictions.tolist()):\n",
+        "\n",
+        "    print(f\"Predicted Label: {pred}\")\n",
+        "    print(\"-\" * 50)\n"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "JdZpUJ-mZEA6",
+        "outputId": "e9f1a095-d613-4212-e47a-461adbab00dd"
+      },
+      "execution_count": 76,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Predicted Label: 2\n",
+            "--------------------------------------------------\n",
+            "Predicted Label: 2\n",
+            "--------------------------------------------------\n",
+            "Predicted Label: 2\n",
+            "--------------------------------------------------\n",
+            "Predicted Label: 2\n",
+            "--------------------------------------------------\n",
+            "Predicted Label: 2\n",
+            "--------------------------------------------------\n"
+          ]
+        }
+      ]
+    }
+  ]
+}
